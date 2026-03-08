@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ChessCrm.Bot/ChessCrm.Bot.csproj" Id="10cbaab3-b920-4a49-b209-cc9ef2b2580c" />
+  <Project Path="ChessCrm.MigrationTool/ChessCrm.MigrationTool.csproj" />
+</Solution>
