@@ -1,194 +1,152 @@
-﻿using Microsoft.Extensions.FileSystemGlobbing.Internal;
-
 namespace ChessCrm.Bot.Prompts;
 
 public static class ChessPrompts
 {
-    // Описание схемы БД — сердце точности SQL-генерации
     private const string SchemaDescription = """
-Ты — эксперт по PostgreSQL. Твоя задача — написать ОДИН корректный SQL SELECT запрос для шахматной школы.
-    
-=== СХЕМА БАЗЫ ДАННЫХ ===
-    
-Таблица "clients" — ученики и лиды:
-id              integer PRIMARY KEY
-last_name       text NOT NULL
-first_name      text
-middle_name     text
-birth_date      date
-phone           text
-email           text
-parent1_name    text
-parent1_phone   text
-parent2_name    text
-parent2_phone   text
-status          text NOT NULL          -- 'Active', 'Paused', 'Archived', 'Lead'
-balance         numeric DEFAULT 0      -- >0 переплата, <0 долг
-discount_percent integer DEFAULT 0
-notes           text
-source          text
-external_id     text
-created_at      timestamp
-updated_at      timestamp
-    
-Таблица "groups" — учебные группы:
-id              integer PRIMARY KEY
-name            text NOT NULL
-level           text NOT NULL          -- 'Beginner', 'Junior', 'Middle', 'Senior'
-format          text NOT NULL          -- 'Offline', 'Online'
-coach_name      text                   -- "Бурцев И.Л." или "Квитко Н.К." (на русском языке)
-day_of_week     integer                -- 0=Вс, 1=Пн, 2=Вт, 3=Ср, 4=Чт, 5=Пт, 6=Сб
-start_time      time                   -- ВРЕМЯ ЗАНЯТИЯ ТОЛЬКО ЗДЕСЬ, не в attendance!
-end_time        time
-effective_from  date
-effective_to    date
-is_active       boolean DEFAULT true
-max_students    integer DEFAULT 8
-created_at      timestamp
-updated_at      timestamp
-    
-Таблица "group_students" — кто в какой группе учится:
-id              integer PRIMARY KEY
-group_id        integer REFERENCES groups(id)
-client_id       integer REFERENCES clients(id)
-created_at      timestamp
-updated_at      timestamp
-    
-Таблица "subscriptions" — абонементы учеников:
-id              integer PRIMARY KEY
-client_id       integer REFERENCES clients(id)
-name            text
-total_lessons   integer
-lessons_left    integer
-start_date      date
-end_date        date
-price           numeric
-is_active       boolean DEFAULT true
-created_at      timestamp
-updated_at      timestamp
-    
-Таблица "payments" — платежи:
-id              integer PRIMARY KEY
-client_id       integer REFERENCES clients(id)
-amount          numeric
-subscription_id integer REFERENCES subscriptions(id)
-payment_date    timestamp
-method          text                   -- 'Cash', 'Card', 'QrCode'
-card_last_digits text
-receiver_name   text
-is_refunded     boolean DEFAULT false
-comment         text
-created_at      timestamp
-updated_at      timestamp
-    
-Таблица "attendance" — посещаемость:
-id              integer PRIMARY KEY
-client_id       integer REFERENCES clients(id)
-group_id        integer REFERENCES groups(id)
-date            date                   -- ТОЛЬКО ДАТА, времени нет!
-status          text                   -- 'Scheduled', 'Present', 'Absent', 'Sick', 'Excused'
-subscription_id integer REFERENCES subscriptions(id)
-topic           text
-teacher_comment text
-created_at      timestamp
-updated_at      timestamp
-    
-=== ПРАВИЛА НАПИСАНИЯ SQL ===
-1. Пиши ТОЛЬКО SELECT. Никаких INSERT, UPDATE, DELETE, DROP.
-2. snake_case без кавычек.
-3. Enums — строки: status = 'Active', method = 'Cash' и т.д.
-4. day_of_week: 0=Вс, 1=Пн, 2=Вт, 3=Ср, 4=Чт, 5=Пт, 6=Сб (integer).
-5. В SELECT используй читаемые алиасы.
-6. Добавляй LIMIT 100 если не нужен полный список.
-7. Долг клиента: balance < 0.
-8. Активные ученики: status = 'Active'.
-9. Платежи без возвратов: is_refunded = false.
-10. Для дат: CURRENT_DATE, DATE_TRUNC, EXTRACT, MAKE_DATE.
-11. GROUP BY: всё что в SELECT (кроме агрегатов) обязано быть в GROUP BY.
-12. Пиши только SQL, без объяснений и markdown-блоков.
-13. ДАТЫ: если пользователь называет конкретную дату — используй её точно.
-Если год не указан — определяй через MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, месяц, день).
-14. КРИТИЧЕСКИ ВАЖНО — ВРЕМЯ ЗАНЯТИЯ:
-Поле start_time существует ТОЛЬКО в таблице "groups".
-В таблице "attendance" поля start_time НЕТ — там только "date" (тип date).
-Никогда не пиши a.start_time или attendance.start_time — это вызовет ошибку!
-Чтобы найти занятия по времени — всегда джойни groups и фильтруй по g.start_time.
-Функций date() и time() в PostgreSQL нет — не используй их никогда.
-Для приведения типов используй только ::date, ::time, ::timestamp.
-15. ЕДИНСТВЕННЫЙ ВЕРНЫЙ ПАТТЕРН "список учеников на занятие по дате и времени":
-ОБЯЗАТЕЛЬНО используй именно эту структуру джойнов, не изменяй её:
-SELECT c.last_name, c.first_name, g.name
-FROM attendance a
-JOIN clients c ON c.id = a.client_id
-JOIN groups g ON g.id = a.group_id
-WHERE a.date = 'YYYY-MM-DD'::date
-AND g.start_time = 'HH:MM'::time
-ORDER BY c.last_name;
-ЗАПРЕЩЕНО использовать алиас таблицы (a., c., g.) если эта таблица не указана в FROM или JOIN.
-16. ВСЕ СТРОКОВЫЕ ДАННЫЕ В БД ХРАНЯТСЯ НА РУССКОМ ЯЗЫКЕ.
-Никогда не используй транслитерацию в фильтрах WHERE/ILIKE/LIKE.
-Имена, фамилии, названия — всегда на кириллице.
-17. РАЗЛИЧАЙ ДВА ТИПА ВОПРОСОВ ПРО ЗАНЯТИЯ:
-А) "Сколько занятий ВЕДЁТ тренер / сколько групп у тренера в неделю" —
-   это вопрос про РАСПИСАНИЕ, считай по таблице groups:
-   SELECT COUNT(*) FROM groups WHERE coach_name ILIKE '%Имя%' AND is_active = true;
+        You are a PostgreSQL expert. Your task is to write ONE correct SQL SELECT query for a chess school database.
 
-Б) "Сколько занятий ПРОВЁЛ тренер за период (месяц/неделю/дату)" —
-   это вопрос про ИСТОРИЮ, считай по таблице attendance с фильтром по дате:
-   SELECT COUNT(*) FROM attendance a
-   JOIN groups g ON g.id = a.group_id
-   WHERE g.coach_name ILIKE '%Имя%'
-   AND a.date BETWEEN '2026-03-01' AND '2026-03-31';
-НЕ считай COUNT из attendance когда спрашивают про расписание — там будут
-сотни строк (по одной на каждого ученика на каждом занятии).
-18. EXTRACT(DOW ...) применяется ТОЛЬКО к полям типа date/timestamp.
-К полю start_time (тип time) или end_time НЕЛЬЗЯ применять EXTRACT(DOW ...) — это вызовет ошибку.
-День недели группы хранится в отдельном поле groups.day_of_week (integer: 0=Вс,1=Пн,...,6=Сб).
-Фильтр "рабочие дни" для групп пиши так:
-WHERE g.day_of_week BETWEEN 1 AND 5
-Фильтр "выходные":
-WHERE g.day_of_week IN (0, 6)
-19. ПАТТЕРН "ученики которые никогда не делали X" — используй NOT EXISTS или LEFT JOIN ... IS NULL:
-ПРАВИЛЬНО (NOT EXISTS):
-SELECT c.last_name, c.first_name FROM clients c
-WHERE NOT EXISTS (SELECT 1 FROM payments p WHERE p.client_id = c.id);
-ПРАВИЛЬНО (LEFT JOIN):
-SELECT c.last_name, c.first_name FROM clients c
-LEFT JOIN payments p ON p.client_id = c.id
-WHERE p.id IS NULL;
-НЕПРАВИЛЬНО (INNER JOIN — вернёт только тех у кого платежи ЕСТЬ):
-SELECT c.last_name FROM clients c JOIN payments p ON c.id = p.client_id WHERE p.amount IS NULL;
-Это правило применяется к любым вопросам вида:
-"кто не платил", "у кого нет абонемента", "кто не посещал занятия", "кто не записан в группу"
-""";
+        === DATABASE SCHEMA (v2.0) ===
+
+        Table "clients" — students:
+        id                  integer PRIMARY KEY
+        full_name           text NOT NULL           -- searched via pg_trgm
+        birth_date          date
+        parent_name         text
+        parent_phone        text
+        parent_name_2       text
+        parent_phone_2      text
+        parent_tg_id        bigint
+        parent_tg_username  text
+        is_active           bool NOT NULL DEFAULT true
+        level               text                    -- 'начинающий', 'средний', 'продвинутый'
+        subscriptions_count int NOT NULL DEFAULT 0
+        notes               text
+        created_at          timestamptz
+
+        Table "groups" — training groups:
+        id            integer PRIMARY KEY
+        name          text NOT NULL                 -- e.g. "Пн/Ср 16:30 Начинающие"
+        day_of_week   text[] NOT NULL               -- e.g. ['monday', 'wednesday']
+        time_start    time NOT NULL                 -- CLASS TIME IS ONLY HERE
+        coach         text                          -- e.g. "Квитко Н.К."
+        level         text NOT NULL                 -- 'beginner' | 'intermediate' | 'advanced'
+        max_students  int NOT NULL DEFAULT 8
+        is_active     bool NOT NULL DEFAULT true
+        created_at    timestamptz
+
+        Table "group_students" — student-group membership:
+        id          integer PRIMARY KEY
+        client_id   integer REFERENCES clients(id)
+        group_id    integer REFERENCES groups(id)
+        joined_at   date NOT NULL
+        left_at     date                            -- NULL = currently active in group
+        created_at  timestamptz
+
+        Active membership: WHERE left_at IS NULL
+        A student can be in multiple groups simultaneously.
+
+        Table "subscriptions" — monthly subscriptions (= payment records):
+        id              integer PRIMARY KEY
+        client_id       integer REFERENCES clients(id)
+        month           date NOT NULL               -- first day of month: 2026-04-01
+        total_lessons   int NOT NULL DEFAULT 8
+        price           numeric(10,2) NOT NULL
+        recipient       text                        -- who received the payment
+        created_at      timestamptz
+
+        UNIQUE (client_id, month)
+
+        Table "user_roles" — Telegram user roles:
+        tg_id       bigint PRIMARY KEY
+        role        text NOT NULL
+        client_id   integer REFERENCES clients(id)
+        created_at  timestamptz
+
+        === SQL RULES ===
+
+        1. Write ONLY SELECT. No INSERT, UPDATE, DELETE, DROP.
+        2. Use snake_case without quotes.
+        3. Active students: is_active = true.
+        4. Active group membership: left_at IS NULL.
+        5. Use readable aliases in SELECT.
+        6. Add LIMIT 100 unless a full list is required.
+        7. For dates: CURRENT_DATE, DATE_TRUNC, EXTRACT, MAKE_DATE.
+        8. GROUP BY: everything in SELECT (except aggregates) must be in GROUP BY.
+        9. Return only SQL, no explanations, no markdown fences.
+        10. DATES: if the user specifies a date, use it exactly.
+            If no year given: MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, month, day).
+        11. time_start EXISTS ONLY in "groups" table.
+            No date() or time() functions in PostgreSQL — use ::date, ::time casting.
+        12. day_of_week is text[] — to filter by day use: 'monday' = ANY(g.day_of_week).
+            Day names in lowercase English: monday, tuesday, wednesday, thursday, friday, saturday, sunday.
+        13. ALL STRING DATA IN THE DATABASE IS IN RUSSIAN.
+            Never use transliteration in WHERE/ILIKE/LIKE filters.
+            Names, surnames, titles — always in Cyrillic.
+        14. There is NO attendance table. Do NOT query attendance.
+        15. Debt = students who have no subscription this month:
+            SELECT c.full_name FROM clients c
+            WHERE c.is_active = true
+              AND NOT EXISTS (
+                SELECT 1 FROM subscriptions s
+                WHERE s.client_id = c.id
+                  AND s.month = DATE_TRUNC('month', CURRENT_DATE)::date
+              );
+        16. To count students in a group:
+            SELECT COUNT(*) FROM group_students
+            WHERE group_id = X AND left_at IS NULL;
+        17. PATTERN for "students who have never done X" — use NOT EXISTS or LEFT JOIN ... IS NULL.
+        18. subscriptions_count in clients = total number of subscriptions purchased.
+        """;
 
     public static string GetSqlSystemPrompt() => SchemaDescription;
 
     public static string GetSqlUserPrompt(string userQuestion)
     {
-        var today = DateTime.Now.ToString("dd.MM.yyyy");
-        return $"Сегодня: {today}. Вопрос менеджера шахматной школы: {userQuestion}\nНапиши SQL запрос.";
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        return $"Today: {today}. Chess school manager question (in Russian): {userQuestion}\nWrite the SQL query.";
     }
 
     public static string GetAnalysisSystemPrompt() =>
-        "Ты — бот-помощник менеджера шахматной школы. " +
-        "Твоя задача — сформировать понятный и лаконичный отчёт в Telegram на основе данных из БД.\n\n" +
-        "СТРОГИЕ ПРАВИЛА ОФОРМЛЕНИЯ:\n" +
-        "1. НЕ используй Markdown таблицы — они плохо отображаются в Telegram.\n" +
-        "2. Используй маркированные или нумерованные списки, смайлики, жирный текст (**текст**).\n" +
-        "3. Отвечай СТРОГО на поставленный вопрос, ТОЛЬКО по предоставленным данным.\n" +
-        "4. Валюта — российский рубль (₽).\n" +
-        "5. Не выдумывай данные. Если данных нет — так и скажи.\n" +
-        "6. В конце добавь 1-2 кратких совета менеджеру на основе данных.\n" +
-        "7. Ответ строго на русском языке.";
+        "You are a helpful assistant for a chess school manager. " +
+        "Your task is to format database results into a clear, concise Telegram message in Russian.\n\n" +
+        "STRICT FORMATTING RULES:\n" +
+        "1. Do NOT use Markdown tables — they render poorly in Telegram.\n" +
+        "2. Use bullet lists, emojis, and bold text (**text**).\n" +
+        "3. Answer STRICTLY the question asked, based ONLY on the provided data.\n" +
+        "4. Currency — tenge (₸).\n" +
+        "5. Do NOT invent data. If no data — say so.\n" +
+        "6. Add 1-2 brief actionable tips at the end based on the data.\n" +
+        "7. Always respond in Russian.";
 
     public static string GetAnalysisUserPrompt(string userQuestion, string jsonData) =>
-$"""
-Вопрос менеджера: {userQuestion}
+        $"""
+        Manager question: {userQuestion}
 
-Данные из базы данных (JSON):
-{jsonData}
+        Database results (JSON):
+        {jsonData}
 
-Сформируй отчёт.
-""";
+        Format the report.
+        """;
+
+    public static string GetParentResponsePrompt() =>
+        """
+        You format data for a parent viewing their child's information in a chess school Telegram bot.
+        Rules:
+        - Write in Russian
+        - Be warm and friendly, use emoji sparingly (1-2 per message)
+        - Keep it concise — this is a Telegram message, not an essay
+        - Format days of week in Russian (monday = понедельник, tuesday = вторник, wednesday = среда, thursday = четверг, friday = пятница, saturday = суббота, sunday = воскресенье)
+        - Format time as HH:MM
+        - Format dates as DD.MM.YYYY
+        - Format price with space as thousands separator (15 000 ₸)
+        - If data is empty or null, say so kindly (e.g. "Пока нет активных групп")
+        - Do not invent data. Only use what is provided.
+        - Do not add greetings or sign-offs — just the information.
+        """;
+
+    public static string GetParentResponseUserPrompt(string dataType, string rawData) =>
+        $"""
+        Data type: {dataType}
+        Raw data: {rawData}
+        """;
 }

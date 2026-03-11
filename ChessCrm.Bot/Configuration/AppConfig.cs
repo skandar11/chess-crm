@@ -1,36 +1,24 @@
-﻿namespace ChessCrm.Bot.Configuration;
+namespace ChessCrm.Bot.Configuration;
 
 public class AppConfig
 {
     public string BotToken { get; }
     public string DbConnectionString { get; }
 
-    // Тяжёлая модель: генерация SQL
-    public string SqlModelApiUrl { get; }
-    public string SqlModelName { get; }
+    // Anthropic API — SQL generation + intent classification
+    public string AnthropicApiKey { get; }
 
-    // Быстрая модель: форматирование ответа
-    public string ChatModelApiUrl { get; }
-    public string ChatModelName { get; }
-
-    // Белый список Telegram user id (через запятую), пусто = без ограничений
-    public HashSet<long> AllowedUserIds { get; }
+    // Google Sheets
+    public string GoogleCredentialsPath { get; }
+    public string? GoogleSpreadsheetIdCrm { get; }       // CRM таблица (Ученики, Абонементы, Инвайты)
 
     public AppConfig()
     {
         DbConnectionString = GetRequired("DB_CONNECTION_STRING");
         BotToken = GetRequired("TELEGRAM_BOT_TOKEN");
-        SqlModelApiUrl = GetRequired("SQL_MODEL_API_URL");
-        SqlModelName = GetRequired("SQL_MODEL_NAME");
-        ChatModelApiUrl = GetRequired("CHAT_MODEL_API_URL");
-        ChatModelName = GetRequired("CHAT_MODEL_NAME");
-
-        var allowed = Environment.GetEnvironmentVariable("ALLOWED_TELEGRAM_USER_IDS") ?? "";
-        AllowedUserIds = allowed
-            .Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => long.TryParse(s.Trim(), out var id) ? id : 0)
-            .Where(id => id != 0)
-            .ToHashSet();
+        AnthropicApiKey = GetRequired("ANTHROPIC_API_KEY");
+        GoogleCredentialsPath = Environment.GetEnvironmentVariable("GOOGLE_CREDENTIALS_PATH") ?? "google-credentials.json";
+        GoogleSpreadsheetIdCrm = Environment.GetEnvironmentVariable("GOOGLE_SPREADSHEET_ID_CRM");
     }
 
     private static string GetRequired(string name)

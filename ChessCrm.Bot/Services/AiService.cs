@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using ChessCrm.Bot.Configuration;
 using ChessCrm.Bot.Prompts;
@@ -6,104 +6,124 @@ using Microsoft.Extensions.Logging;
 
 namespace ChessCrm.Bot.Services;
 
+/// <summary>
+/// Handles all AI calls: SQL generation and response formatting via Claude API.
+/// </summary>
 public class AiService(AppConfig config, HttpClient httpClient, ILogger<AiService> logger)
 {
-    // Генерация SQL через тяжёлую модель
+    private const string ClaudeApiUrl = "https://api.anthropic.com/v1/messages";
+    private const string SqlModel     = "claude-haiku-4-5";
+    private const string FormatModel  = "claude-haiku-4-5";
+
+    // Generate SQL from natural language question
     public async Task<string> GenerateSqlAsync(string userQuestion, CancellationToken ct)
     {
-        var raw = await CallModelAsync(
-            apiUrl: config.SqlModelApiUrl,
-            modelName: config.SqlModelName,
+        var raw = await CallClaudeAsync(
+            model: SqlModel,
             systemPrompt: ChessPrompts.GetSqlSystemPrompt(),
             userMessage: ChessPrompts.GetSqlUserPrompt(userQuestion),
+            maxTokens: 1024,
             ct: ct
         );
 
-        // Вырезаем SQL из возможного markdown-блока
         return ExtractSql(raw);
     }
 
-    // Форматирование ответа через быструю модель
+    // Format raw JSON data into a human-readable Telegram message
     public async Task<string> AnalyzeDataAsync(string userQuestion, string jsonData, CancellationToken ct)
     {
-        return await CallModelAsync(
-            apiUrl: config.ChatModelApiUrl,
-            modelName: config.ChatModelName,
+        return await CallClaudeAsync(
+            model: FormatModel,
             systemPrompt: ChessPrompts.GetAnalysisSystemPrompt(),
             userMessage: ChessPrompts.GetAnalysisUserPrompt(userQuestion, jsonData),
+            maxTokens: 1024,
             ct: ct
         );
     }
 
-    // Исправляет SQL на основе ошибки PostgreSQL
+    // Fix broken SQL using the PostgreSQL error message
     public async Task<string> FixSqlAsync(string originalQuestion, string brokenSql, string pgError, CancellationToken ct)
     {
         var message = $"""
-        Ты написал SQL запрос, но он вернул ошибку PostgreSQL.
-        
-        Исходный вопрос: {originalQuestion}
-        
-        Твой SQL:
-        {brokenSql}
-        
-        Ошибка PostgreSQL:
-        {pgError}
-        
-        Исправь SQL. Помни:
-        - JOIN groups g ON g.id = a.group_id ОБЯЗАТЕЛЕН если используешь g.start_time
-        - Функций date() и time() нет в PostgreSQL, используй ::date и ::time
-        - Пиши только исправленный SQL без объяснений
-        """;
+            You wrote an SQL query that returned a PostgreSQL error.
 
-        var raw = await CallModelAsync(
-            apiUrl: config.SqlModelApiUrl,
-            modelName: config.SqlModelName,
+            Original question: {originalQuestion}
+
+            Your SQL:
+            {brokenSql}
+
+            PostgreSQL error:
+            {pgError}
+
+            Fix the SQL. Rules:
+            - JOIN groups g ON g.id = a.group_id is REQUIRED when using g.start_time
+            - date() and time() functions do not exist in PostgreSQL — use ::date and ::time casting
+            - Return only the fixed SQL, no explanations
+            """;
+
+        var raw = await CallClaudeAsync(
+            model: SqlModel,
             systemPrompt: ChessPrompts.GetSqlSystemPrompt(),
             userMessage: message,
+            maxTokens: 1024,
             ct: ct
         );
 
         return ExtractSql(raw);
     }
 
-    private async Task<string> CallModelAsync(
-        string apiUrl, string modelName,
-        string systemPrompt, string userMessage,
-        CancellationToken ct)
+    // Format parent data into a warm, readable Telegram message
+    public async Task<string> FormatParentResponseAsync(string dataType, string rawData, CancellationToken ct)
+    {
+        return await CallClaudeAsync(
+            model: FormatModel,
+            systemPrompt: ChessPrompts.GetParentResponsePrompt(),
+            userMessage: ChessPrompts.GetParentResponseUserPrompt(dataType, rawData),
+            maxTokens: 1024,
+            ct: ct
+        );
+    }
+
+    // Core Claude API call
+    private async Task<string> CallClaudeAsync(
+        string model, string systemPrompt, string userMessage,
+        int maxTokens, CancellationToken ct)
     {
         var payload = new
         {
-            model = modelName,
-            temperature = 0.1,
+            model,
+            max_tokens = maxTokens,
+            system = systemPrompt,
             messages = new[]
             {
-                new { role = "system", content = systemPrompt },
-                new { role = "user",   content = userMessage  }
+                new { role = "user", content = userMessage }
             }
         };
 
-        var content = new StringContent(
+        var request = new HttpRequestMessage(HttpMethod.Post, ClaudeApiUrl);
+        request.Headers.Add("x-api-key", config.AnthropicApiKey);
+        request.Headers.Add("anthropic-version", "2023-06-01");
+        request.Content = new StringContent(
             JsonSerializer.Serialize(payload),
             Encoding.UTF8,
             "application/json"
         );
 
-        logger.LogDebug("→ Запрос к модели {Model} @ {Url}", modelName, apiUrl);
+        logger.LogDebug("→ Claude API [{Model}]: {Message}", model, userMessage[..Math.Min(80, userMessage.Length)]);
 
-        var response = await httpClient.PostAsync(apiUrl, content, ct);
+        var response = await httpClient.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var result = doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
+            .GetProperty("content")[0]
+            .GetProperty("text")
             .GetString() ?? string.Empty;
 
         return result.Trim();
     }
 
-    // Убираем ```sql ... ``` если модель завернула ответ в markdown
+    // Strip ```sql ... ``` markdown fences if model wrapped the output
     private static string ExtractSql(string raw)
     {
         var start = raw.IndexOf("```sql", StringComparison.OrdinalIgnoreCase);
@@ -114,7 +134,6 @@ public class AiService(AppConfig config, HttpClient httpClient, ILogger<AiServic
             if (end > start) return raw[start..end].Trim();
         }
 
-        // Пробуем без указания языка
         start = raw.IndexOf("```", StringComparison.OrdinalIgnoreCase);
         if (start >= 0)
         {
