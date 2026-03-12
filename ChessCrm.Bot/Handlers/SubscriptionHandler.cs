@@ -29,6 +29,58 @@ public class SubscriptionHandler(
         ["декабрь"] = 12, ["декабря"] = 12,
     };
 
+    /// <summary>
+    /// Called from TelegramBotService after preview: client and period already resolved.
+    /// Skips steps 1-4 (find client, parse period) — starts with duplicate check (race condition) and INSERT.
+    /// </summary>
+    public async Task<HandlerResult> HandleAsync(
+        int clientId, string clientFullName,
+        DateOnly monthDate, decimal amount, string? recipient,
+        CancellationToken ct)
+    {
+        // ── Duplicate check (race condition guard) ──────────────────────
+        if (await dbService.HasSubscriptionForMonthAsync(clientId, monthDate, ct))
+        {
+            var monthName = GetRussianMonthName(monthDate.Month);
+            return new HandlerResult(false,
+                $"⚠️ У <b>{clientFullName}</b> уже есть абонемент за <b>{monthName} {monthDate.Year}</b>.");
+        }
+
+        // ── INSERT subscription ─────────────────────────────────────────
+        var subscriptionId = await dbService.CreateSubscriptionAsync(new SubscriptionRecord(
+            ClientId:     clientId,
+            Month:        monthDate,
+            TotalLessons: 8,
+            Price:        amount,
+            Recipient:    recipient?.Trim()
+        ), ct);
+
+        logger.LogInformation(
+            "Абонемент #{SubId}: клиент={Client}, период={Month}/{Year}, получатель={Recipient}",
+            subscriptionId, clientFullName, monthDate.Month, monthDate.Year, recipient);
+
+        // ── Google Sheets ───────────────────────────────────────────────
+        var monthLabel = $"{GetRussianMonthName(monthDate.Month)} {monthDate.Year}";
+        var sheetsOk = await sheetsService.WriteSubscriptionAsync(
+            subscriptionId, clientFullName, monthLabel,
+            recipient?.Trim(), amount, DateOnly.FromDateTime(DateTime.Now));
+
+        var sheetsNote = sheetsOk ? "" : "\n⚠️ <i>Не записался в Sheets — проверь вручную.</i>";
+
+        // ── Confirmation ────────────────────────────────────────────────
+        var lines = new List<string>
+        {
+            "✅ <b>Абонемент оформлен</b>\n",
+            $"👤 Ученик: <b>{clientFullName}</b>",
+            $"🗓 Период: <b>{monthLabel}</b>",
+            $"💰 Сумма: <b>{amount:N0} ₸</b>",
+        };
+        if (!string.IsNullOrWhiteSpace(recipient))
+            lines.Add($"🧑 Получатель: <b>{recipient}</b>");
+
+        return new HandlerResult(true, string.Join("\n", lines) + sheetsNote);
+    }
+
     public async Task<HandlerResult> HandleAsync(
         Dictionary<string, string?> intentParams,
         CancellationToken ct)
@@ -108,7 +160,7 @@ public class SubscriptionHandler(
 
     // ── Вспомогательные методы ─────────────────────────────────────────────
 
-    private (int month, int year) ParsePeriod(string? period)
+    public static (int month, int year) ParsePeriod(string? period)
     {
         var now = DateTime.Now;
         if (string.IsNullOrWhiteSpace(period))

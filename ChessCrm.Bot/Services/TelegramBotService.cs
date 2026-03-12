@@ -79,9 +79,9 @@ public class TelegramBotService(
             {
                 try
                 {
-                    var (success, responseMsg) = await parentOnboardingHandler.HandleAsync(
+                    var result = await parentOnboardingHandler.HandleAsync(
                         token, userId, tgUsername, ct);
-                    await bot.SendMessage(chatId, responseMsg, cancellationToken: ct);
+                    await bot.SendMessage(chatId, result.Message, cancellationToken: ct);
                 }
                 catch (Exception ex)
                 {
@@ -151,14 +151,14 @@ public class TelegramBotService(
             {
                 // ── Команды записи: показываем превью ──────────────────────
                 case "sell_subscription":
-                    var subPreview = BuildSubscriptionPreview(intent.Params);
-                    pendingActions.Set(chatId, new PendingAction(
-                        subPreview,
-                        intent.Intent,
-                        intent.Params,
-                        execCt => subscriptionHandler.HandleAsync(intent.Params, execCt)
-                    ));
-                    await EditWithConfirmButtons(bot, chatId, statusMsg.MessageId, subPreview, ct);
+                    var (subAction, subError) = await BuildSubscriptionPreviewAsync(intent.Params, ct);
+                    if (subError != null)
+                    {
+                        await Edit(bot, chatId, statusMsg.MessageId, subError, ct);
+                        return;
+                    }
+                    pendingActions.Set(chatId, subAction!);
+                    await EditWithConfirmButtons(bot, chatId, statusMsg.MessageId, subAction!.Preview, ct);
                     return;
 
                 case "new_student":
@@ -179,20 +179,15 @@ public class TelegramBotService(
                     return;
 
                 case "add_to_group":
-                    var (addToGroupPreview, addToGroupError) =
+                    var (addToGroupAction, addToGroupError) =
                         await BuildAddToGroupPreviewAsync(intent.Params, ct);
                     if (addToGroupError != null)
                     {
                         await Edit(bot, chatId, statusMsg.MessageId, addToGroupError, ct);
                         return;
                     }
-                    pendingActions.Set(chatId, new PendingAction(
-                        addToGroupPreview!,
-                        intent.Intent,
-                        intent.Params,
-                        execCt => addToGroupHandler.HandleAsync(intent.Params, execCt)
-                    ));
-                    await EditWithConfirmButtons(bot, chatId, statusMsg.MessageId, addToGroupPreview!, ct);
+                    pendingActions.Set(chatId, addToGroupAction!);
+                    await EditWithConfirmButtons(bot, chatId, statusMsg.MessageId, addToGroupAction!.Preview, ct);
                     return;
 
                 case "edit_student":
@@ -353,25 +348,70 @@ public class TelegramBotService(
 
     // ── Preview builders ────────────────────────────────────────────────────
 
-    private static string BuildSubscriptionPreview(Dictionary<string, string?> p)
+    private async Task<(PendingAction? Action, string? Error)> BuildSubscriptionPreviewAsync(
+        Dictionary<string, string?> p, CancellationToken ct)
     {
-        var name      = p.GetValueOrDefault("student_name") ?? "?";
-        var amount    = p.GetValueOrDefault("amount") ?? "?";
-        var period    = p.GetValueOrDefault("period") ?? "";
-        var recipient = p.GetValueOrDefault("recipient");
+        // ── 1. Find student ──────────────────────────────────────────────
+        var studentName = p.GetValueOrDefault("student_name");
+        if (string.IsNullOrWhiteSpace(studentName))
+            return (null, "❓ Не понял имя ученика. Попробуй:\n<i>Айгерим оплатила 15000 за апрель</i>");
 
+        var matches = await dbService.FindClientByNameAsync(studentName, ct);
+
+        if (matches.Count == 0)
+            return (null, $"❌ Ученик <b>{studentName}</b> не найден. Уточни имя.");
+
+        if (matches.Count > 1)
+        {
+            var list = string.Join("\n", matches.Select(m => $"  • {m.FullName} (id: {m.Id})"));
+            return (null, $"🔍 Найдено несколько учеников:\n{list}\n\nУточни полное ФИО.");
+        }
+
+        var client = matches[0];
+
+        // ── 2. Parse amount ──────────────────────────────────────────────
+        if (!p.TryGetValue("amount", out var amountStr) || !decimal.TryParse(amountStr, out var amount) || amount <= 0)
+            return (null, "❓ Не понял сумму. Укажи число:\n<i>Айгерим оплатила 15000 за апрель</i>");
+
+        // ── 3. Parse period ──────────────────────────────────────────────
+        p.TryGetValue("period", out var periodStr);
+        p.TryGetValue("recipient", out var recipient);
+
+        var (paymentMonth, paymentYear) = SubscriptionHandler.ParsePeriod(periodStr);
+        var monthDate = new DateOnly(paymentYear, paymentMonth, 1);
+
+        // ── 4. Check duplicate ───────────────────────────────────────────
+        var monthName = SubscriptionHandler.GetRussianMonthName(paymentMonth);
+        if (await dbService.HasSubscriptionForMonthAsync(client.Id, monthDate, ct))
+            return (null, $"⚠️ У <b>{client.FullName}</b> уже есть абонемент за <b>{monthName} {paymentYear}</b>.");
+
+        // ── 5. Build preview ─────────────────────────────────────────────
+        var monthLabel = $"{monthName} {paymentYear}";
         var lines = new List<string>
         {
             "📋 <b>Оформить абонемент?</b>\n",
-            $"👤 Ученик: <b>{name}</b>",
-            $"💰 Сумма: <b>{amount} ₸</b>",
+            $"👤 Ученик: <b>{client.FullName}</b>",
+            $"💰 Сумма: <b>{amount:N0} ₸</b>",
+            $"📅 Период: <b>{monthLabel}</b>",
         };
-        if (!string.IsNullOrWhiteSpace(period))
-            lines.Add($"📅 Период: {period}");
         if (!string.IsNullOrWhiteSpace(recipient))
             lines.Add($"🧑 Получатель: {recipient}");
 
-        return string.Join("\n", lines);
+        var preview = string.Join("\n", lines);
+
+        var capturedClientId   = client.Id;
+        var capturedClientName = client.FullName;
+
+        var action = new PendingAction(
+            preview,
+            "sell_subscription",
+            p,
+            execCt => subscriptionHandler.HandleAsync(
+                capturedClientId, capturedClientName,
+                monthDate, amount, recipient, execCt)
+        );
+
+        return (action, null);
     }
 
     // Returns (preview, errorMessage) — errorMessage is non-null on blocking validation error
@@ -494,10 +534,28 @@ public class TelegramBotService(
         return (string.Join("\n", lines), null);
     }
 
-    private async Task<(string? Preview, string? Error)> BuildAddToGroupPreviewAsync(
+    private async Task<(PendingAction? Action, string? Error)> BuildAddToGroupPreviewAsync(
         Dictionary<string, string?> p, CancellationToken ct)
     {
-        var name      = p.GetValueOrDefault("student_name") ?? "?";
+        // ── 1. Find student ──────────────────────────────────────────────
+        var studentName = p.GetValueOrDefault("student_name");
+        if (string.IsNullOrWhiteSpace(studentName))
+            return (null, "❓ Не понял имя ученика. Напиши: <i>Записать Иванова в среду 18:00</i>");
+
+        var matches = await dbService.FindClientByNameAsync(studentName, ct);
+
+        if (matches.Count == 0)
+            return (null, $"❌ Ученик <b>{studentName}</b> не найден. Уточни имя.");
+
+        if (matches.Count > 1)
+        {
+            var list = string.Join("\n", matches.Select(m => $"  • {m.FullName} (id: {m.Id})"));
+            return (null, $"🔍 Найдено несколько учеников:\n{list}\n\nУточни полное ФИО.");
+        }
+
+        var client = matches[0];
+
+        // ── 2. Resolve group ─────────────────────────────────────────────
         var gid       = p.GetValueOrDefault("group_id");
         var day       = p.GetValueOrDefault("group_1_day") ?? p.GetValueOrDefault("day_of_week");
         var time      = p.GetValueOrDefault("group_1_time") ?? p.GetValueOrDefault("time");
@@ -506,7 +564,21 @@ public class TelegramBotService(
         var (groupLine, err) = await ResolveGroupLineAsync(day, time, gid, ct, groupName: groupName);
         if (err != null) return (null, err);
 
-        return ($"📌 <b>Записать в группу?</b>\n\n👤 Ученик: <b>{name}</b>\n📅 Группа: <b>{groupLine}</b>", null);
+        // ── 3. Build preview ─────────────────────────────────────────────
+        var preview = $"📌 <b>Записать в группу?</b>\n\n👤 Ученик: <b>{client.FullName}</b>\n📅 Группа: <b>{groupLine}</b>";
+
+        var capturedClientId   = client.Id;
+        var capturedClientName = client.FullName;
+
+        var action = new PendingAction(
+            preview,
+            "add_to_group",
+            p,
+            execCt => addToGroupHandler.HandleAsync(
+                capturedClientId, capturedClientName, p, execCt)
+        );
+
+        return (action, null);
     }
 
     private async Task<(PendingAction? Action, string? Error)> BuildRemoveFromGroupPreviewAsync(
@@ -731,8 +803,8 @@ public class TelegramBotService(
         if (fields.Count == 0)
             return (null, "❓ Не указаны поля для изменения.");
 
-        // ── Find client ──────────────────────────────────────────────────
-        var matches = await dbService.FindClientByNameAsync(studentName, ct);
+        // ── Find client (including inactive — admin may want to reactivate) ─
+        var matches = await dbService.FindClientByNameAsync(studentName, ct, includeInactive: true);
 
         if (matches.Count == 0)
             return (null, $"❌ Ученик <b>{studentName}</b> не найден. Уточни имя.");

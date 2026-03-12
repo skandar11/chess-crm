@@ -95,7 +95,8 @@ public class DatabaseService(AppConfig config, ILogger<DatabaseService> logger)
     /// Ищет клиентов по имени (full_name).
     /// Возвращает список совпадений. Один результат = нашли точно.
     /// </summary>
-    public async Task<List<ClientMatch>> FindClientByNameAsync(string name, CancellationToken ct = default)
+    public async Task<List<ClientMatch>> FindClientByNameAsync(
+        string name, CancellationToken ct = default, bool includeInactive = false)
     {
         var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
@@ -106,11 +107,11 @@ public class DatabaseService(AppConfig config, ILogger<DatabaseService> logger)
 
         foreach (var part in parts)
         {
-            const string sql = """
+            var sql = $"""
                 SELECT id, full_name
                 FROM clients
                 WHERE full_name ILIKE @p
-                  AND is_active = true
+                  {(includeInactive ? "" : "AND is_active = true")}
                 ORDER BY full_name
                 LIMIT 10
                 """;

@@ -12,8 +12,9 @@ namespace ChessCrm.Bot.Services;
 public class AiService(AppConfig config, HttpClient httpClient, ILogger<AiService> logger)
 {
     private const string ClaudeApiUrl = "https://api.anthropic.com/v1/messages";
-    private const string SqlModel     = "claude-haiku-4-5";
-    private const string FormatModel  = "claude-haiku-4-5";
+    internal const string DefaultModel = "claude-haiku-4-5-20251001";
+    private const string SqlModel     = DefaultModel;
+    private const string FormatModel  = DefaultModel;
 
     // Generate SQL from natural language question
     public async Task<string> GenerateSqlAsync(string userQuestion, CancellationToken ct)

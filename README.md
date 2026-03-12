@@ -1,22 +1,62 @@
-# ChessCRM — Аналитический Telegram-бот для шахматной школы
+# ChessCrm.Bot — Telegram-бот для управления шахматной школой
 
-Проект состоит из двух частей:
-- **ChessCrm.MigrationTool** — одноразовый инструмент миграции данных из Google Sheets в PostgreSQL
-- **ChessCrm.Bot** — Telegram-бот с ИИ-аналитикой на базе LM Studio
+AI-ассистент для менеджера: запись учеников, абонементы, аналитика — через обычный текст в Telegram.
+
+---
+
+## Стек
+
+| Компонент | Технология |
+|-----------|-----------|
+| Язык | C# / .NET 10 |
+| Telegram | Telegram.Bot 22.x |
+| AI — все вызовы | Claude API (Haiku) |
+| База данных | PostgreSQL 16 |
+| Доступ к БД | Raw Npgsql (без ORM) |
+| Google Sheets | Google.Apis.Sheets.v4 (зеркало данных) |
+| Аналитика | Metabase (Docker, read-only к PostgreSQL) |
+| Логирование | Serilog |
+
+---
+
+## Структура проекта
+
+```
+chess-crm/
+├── ChessCrm.Bot/             # Telegram-бот
+│   ├── Configuration/        # AppConfig.cs — чтение .env
+│   ├── Handlers/             # NewStudentHandler, SubscriptionHandler, ...
+│   ├── Prompts/              # IntentPrompts.cs, ChessPrompts.cs
+│   ├── Services/             # TelegramBotService, DatabaseService, AiService, ...
+│   ├── Program.cs            # DI-контейнер, запуск
+│   └── .env.example          # Шаблон переменных окружения
+├── ChessCrm.MigrationTool/   # Одноразовый импорт данных (отдельный проект)
+├── Tests/                    # Интеграционные тесты
+├── docs/                     # Документация
+│   ├── admin-guide.md        # Инструкция для менеджера
+│   └── parent-guide.md       # Инструкция для родителей
+├── scripts/
+│   └── reset_database.sql    # Пересоздание БД с нуля
+├── metabase/
+│   └── docker-compose.yml    # Metabase для просмотра данных
+└── README.md
+```
 
 ---
 
 ## Требования
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [PostgreSQL 15+](https://www.postgresql.org/download/)
-- [LM Studio](https://lmstudio.ai/)
-- Google Service Account с доступом к Sheets API
+- PostgreSQL 16
 - Telegram Bot Token ([@BotFather](https://t.me/BotFather))
+- Anthropic API Key ([console.anthropic.com](https://console.anthropic.com))
+- Google Service Account с доступом к Sheets API
+- Docker Desktop (опционально, для Metabase)
 
 ---
 
 ## Шаг 1 — Клонирование репозитория
+
 ```bash
 git clone https://github.com/bogdan-popov/chess-crm.git
 cd chess-crm
@@ -24,208 +64,151 @@ cd chess-crm
 
 ---
 
-## Шаг 2 — Создание базы данных PostgreSQL
-
-### Windows
-1. Установи PostgreSQL с [официального сайта](https://www.postgresql.org/download/windows/)
-2. Открой **pgAdmin** или **SQL Shell (psql)**
-3. Выполни:
-```sql
-CREATE DATABASE chess_crm;
-```
+## Шаг 2 — База данных
 
 ### Mac
 ```bash
-brew install postgresql@15
-brew services start postgresql@15
+brew install postgresql@16
+brew services start postgresql@16
 psql postgres -c "CREATE DATABASE chess_crm;"
 ```
 
+### Создание схемы
+```bash
+psql chess_crm < scripts/reset_database.sql
+```
+
+Скрипт создаёт все таблицы (`clients`, `groups`, `group_students`, `subscriptions`, `user_roles`) и включает `pg_trgm`.
+
 ---
 
-## Шаг 3 — Настройка Google Sheets API
+## Шаг 3 — Google Sheets API
 
-1. Открой [Google Cloud Console](https://console.cloud.google.com/)
-2. Создай проект → Включи **Google Sheets API**
+1. Открой [Google Cloud Console](https://console.cloud.google.com/) → создай проект
+2. Включи **Google Sheets API**
 3. Создай **Service Account** → скачай JSON ключ
-4. Переименуй файл в `google-credentials.json`
-5. Положи его в папку `ChessCrm.MigrationTool/`
-6. В каждой Google-таблице нажми **"Поделиться"** и добавь email сервисного аккаунта с правами редактора
+4. Переименуй файл в `google-credentials.json`, положи в `ChessCrm.Bot/`
+5. Создай Google Таблицу с четырьмя листами: **Ученики**, **Абонементы**, **Инвайты**, **Группы**
+6. Поделись таблицей с email сервисного аккаунта (права редактора)
+7. Скопируй ID таблицы из URL: `docs.google.com/spreadsheets/d/`**`ВОТ_ЭТО`**`/edit`
 
 ---
 
-## Шаг 4 — Настройка LM Studio
+## Шаг 4 — Настройка .env
 
-### Установка
-**Windows / Mac**: скачай с [lmstudio.ai](https://lmstudio.ai/) и установи
-
-### Загрузка моделей
-1. Открой LM Studio → вкладка **Search (🔍)**
-2. Найди и скачай **`sqlcoder-7b-2`** (~5GB) или **`openai/gpt-oss-20b`** (~12GB) — генерация SQL
-3. Найди и скачай **`gemma-3-4b-it`** (~3GB) — форматирование ответов
-
-### Запуск сервера
-1. Перейди на вкладку **Developer (↔️)**
-2. В выпадающем списке выбери модель **sqlcoder-7b-2** → нажми **Load**
-3. Нажми **Start Server** — сервер запустится на `http://localhost:1234`
-4. Запомни точное название модели из правой панели — оно нужно для `.env`
-
-> **Рекомендации по железу:**
-> - sqlcoder-7b-2: минимум 8GB RAM (лучше 16GB)
-> - gemma-3-4b-it: минимум 6GB RAM
-> - Если RAM не хватает на обе — в `.env` можно указать одну модель для обоих параметров
-
----
-
-## Шаг 5 — Миграция данных (запускается один раз)
-
-### Настройка .env
 ```bash
-# Windows (PowerShell)
-cd ChessCrm.MigrationTool
-copy .env.example .env
-
-# Mac
-cd ChessCrm.MigrationTool
-cp .env.example .env
-```
-
-Открой `.env` и заполни:
-```
-DB_CONNECTION_STRING=Host=localhost;Port=5432;Database=chess_crm;Username=postgres;Password=твой_пароль
-GOOGLE_CREDENTIALS_PATH=google-credentials.json
-GOOGLE_APPLICATION_NAME=ChessCrmMigration
-GOOGLE_SPREADSHEET_ID_SCHEDULE=ID_таблицы_расписания
-GOOGLE_SPREADSHEET_ID_PAYMENTS=ID_таблицы_платежей
-GOOGLE_SPREADSHEET_ID_ATTENDANCE=ID_таблицы_учеников
-```
-
-> ID таблицы — часть URL таблицы: `docs.google.com/spreadsheets/d/`**`ВОТ_ЭТО`**`/edit`
-
-### Запуск
-```bash
-dotnet run --project ChessCrm.MigrationTool
-```
-
-При запуске автоматически выполнится:
-1. Применение миграций EF Core (создание таблиц)
-2. Создание групп
-3. Миграция клиентов из Google Sheets
-4. Миграция платежей из Google Sheets
-5. Запись учеников в группы
-6. Генерация тестовых занятий на март 2026
-
-В конце должно появиться:
-```
-Миграция полностью завершена! База данных готова к работе.
-```
-
-> **Повторный запуск безопасен** — каждый шаг проверяет наличие данных и пропускает уже мигрированное.
-
----
-
-## Шаг 6 — Запуск Telegram-бота
-
-### Получи Bot Token
-1. Напиши [@BotFather](https://t.me/BotFather) в Telegram
-2. Отправь `/newbot` → следуй инструкциям
-3. Скопируй полученный токен
-
-### Узнай свой Telegram User ID
-Напиши боту [@userinfobot](https://t.me/userinfobot) — он пришлёт твой ID
-
-### Настройка .env
-```bash
-# Windows (PowerShell)
-cd ChessCrm.Bot
-copy .env.example .env
-
-# Mac
 cd ChessCrm.Bot
 cp .env.example .env
 ```
 
 Открой `.env` и заполни:
-```
+
+```env
 TELEGRAM_BOT_TOKEN=1234567890:ABC-токен_от_BotFather
-ALLOWED_TELEGRAM_USER_IDS=твой_telegram_id (опционально, ограничивает доступ к боту)
-
-DB_CONNECTION_STRING=Host=localhost;Port=5432;Database=chess_crm;Username=postgres;Password=твой_пароль
-
-SQL_MODEL_API_URL=http://localhost:1234/v1/chat/completions
-SQL_MODEL_NAME=sqlcoder-7b-2
-
-CHAT_MODEL_API_URL=http://localhost:1234/v1/chat/completions
-CHAT_MODEL_NAME=gemma-3-4b-it
+DB_CONNECTION_STRING=Host=localhost;Port=5432;Database=chess_crm;Username=skandar;Password=
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_CREDENTIALS_PATH=google-credentials.json
+GOOGLE_SPREADSHEET_ID_CRM=ID_твоей_таблицы
 ```
 
-> Точные названия моделей скопируй из LM Studio — правая панель в разделе Loaded Models
+---
 
-### Запуск
+## Шаг 5 — Добавить первого администратора
+
+После запуска бота добавь себя как администратора напрямую в БД:
+
+```sql
+INSERT INTO user_roles (tg_id, role)
+VALUES (твой_telegram_id, 'admin');
+```
+
+Свой Telegram ID узнай через [@userinfobot](https://t.me/userinfobot).
+
+Все остальные пользователи без роли получат сообщение «Нет доступа».
+
+---
+
+## Шаг 6 — Запуск бота
+
 ```bash
 dotnet run --project ChessCrm.Bot
 ```
 
-В консоли должно появиться:
+В консоли появится:
 ```
 [HH:mm:ss INF] Бот @ИмяБота запущен.
 ```
 
 ---
 
-## Шаг 7 — Тестирование бота
+## Шаг 7 — Metabase (опционально)
 
-Открой своего бота в Telegram и отправь `/start`
+Для просмотра данных и дашбордов:
 
-**Тестовые вопросы:**
+```bash
+cd metabase
+docker compose up -d
 ```
-Сколько всего учеников в базе?
-Кто занимается у тренера Квитко Н.К.?
-Список учеников на занятие 9 марта в 16:30
-Сколько занятий на неделе ведёт тренер Бурцев И.Л.?
-Кто должен денег?
-Какие ученики ни разу не платили?
-Общая сумма платежей за март 2026
-```
+
+Интерфейс: http://localhost:3000  
+Подключение к БД: `host.docker.internal:5432`, база `chess_crm`
+
+Metabase только читает данные — не пишет.
 
 ---
 
-## Структура проекта
+## Роли пользователей
+
+| Роль | Права | Как получить |
+|------|-------|-------------|
+| `admin` | Все команды: запись, аналитика, инвайты | Вручную через INSERT в user_roles |
+| `parent` | Только свой ребёнок: расписание, данные, абонемент | Через инвайт-ссылку от администратора |
+
+---
+
+## Что умеет бот
+
+Подробное описание команд — в [`docs/admin-guide.md`](docs/admin-guide.md).
+
+Краткий список:
+- **Новый ученик** — `Новый ученик Попов Богдан, 2019, мама Иванова 7771234567, вт18`
+- **Абонемент** — `Айгерим оплатила 15000 за апрель Никите`
+- **Записать в группу** — `Записать Попова в пн16`
+- **Убрать из группы** — `Убери Попова из пн16`
+- **Перенос** — `Перенеси Попова из пн16 в ср18`
+- **Редактирование** — `Измени телефон Попова на 7779998877`
+- **Инвайт для родителя** — `Инвайт для Попова`
+- **Аналитика** — `Кто не платил в этом месяце?`, `Сколько учеников у Квитко?`
+
+---
+
+## Архитектура
+
 ```
-chess-crm/
-├── ChessCrm.MigrationTool/   # Одноразовая миграция из Google Sheets
-│   ├── Configuration/
-│   ├── Database/
-│   │   ├── Migrations/
-│   │   └── Seeders/
-│   ├── Entities/
-│   ├── Enums/
-│   ├── Services/
-│   └── .env.example
-├── ChessCrm.Bot/             # Telegram-бот аналитики
-│   ├── Configuration/
-│   ├── Prompts/
-│   ├── Services/
-│   └── .env.example
-├── .gitignore
-└── README.md
+Менеджер → Telegram → Claude API (намерение + параметры) → C# бэкенд → PostgreSQL
+                                                                  ↓
+                                                        Google Sheets (зеркало)
 ```
+
+PostgreSQL — источник правды.  
+Google Sheets — append-only зеркало для быстрого просмотра менеджером.  
+Бот **никогда не удаляет** записи из базы.
 
 ---
 
 ## Возможные проблемы
 
-**`relation "clients" does not exist`**
-→ Таблицы не созданы. Убедись что `MigrateAsync()` отработал без ошибок при запуске MigrationTool
+**`relation "clients" does not exist`**  
+→ Схема не создана. Запусти `psql chess_crm < scripts/reset_database.sql`
 
-**`Переменная окружения 'X' не найдена`**
-→ Не создан `.env` или не заполнены все поля. Проверь по `.env.example`
+**`Переменная окружения 'X' не найдена`**  
+→ Не заполнен `.env`. Проверь по `.env.example`
 
-**`Google: File not found: google-credentials.json`**
-→ Файл ключа не положен в папку `ChessCrm.MigrationTool/`
+**`Нет доступа. Используйте персональную ссылку...`**  
+→ Твой `tg_id` не добавлен в `user_roles` как `admin`
 
-**`LM Studio connection refused`**
-→ Не запущен сервер. Открой LM Studio → Developer → Start Server
+**`Google: File not found: google-credentials.json`**  
+→ Файл ключа не положен в `ChessCrm.Bot/`
 
-**`Telegram: Unauthorized`**
+**`Telegram: Unauthorized`**  
 → Неверный Bot Token в `.env`

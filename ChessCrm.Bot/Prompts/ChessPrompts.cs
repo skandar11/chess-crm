@@ -25,11 +25,11 @@ public static class ChessPrompts
 
         Table "groups" — training groups:
         id            integer PRIMARY KEY
-        name          text NOT NULL                 -- e.g. "Пн/Ср 16:30 Начинающие"
+        name          text NOT NULL                 -- short format: "пн16", "вт18", "ср16", "сб10" etc. (2-letter day prefix + hour)
         day_of_week   text[] NOT NULL               -- e.g. ['monday', 'wednesday']
         time_start    time NOT NULL                 -- CLASS TIME IS ONLY HERE
         coach         text                          -- e.g. "Квитко Н.К."
-        level         text NOT NULL                 -- 'beginner' | 'intermediate' | 'advanced'
+        level         text NOT NULL                 -- values: 'новички', 'младшие', 'средняя', 'старшая'
         max_students  int NOT NULL DEFAULT 8
         is_active     bool NOT NULL DEFAULT true
         created_at    timestamptz

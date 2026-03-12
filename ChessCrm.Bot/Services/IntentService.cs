@@ -22,7 +22,7 @@ public class IntentService(AppConfig config, HttpClient httpClient, ILogger<Inte
 
         var payload = new
         {
-            model = "claude-haiku-4-5",
+            model = AiService.DefaultModel,
             max_tokens = 512,
             system = IntentPrompts.GetIntentSystemPrompt(),
             messages = new[]
@@ -84,7 +84,7 @@ public class IntentService(AppConfig config, HttpClient httpClient, ILogger<Inte
 
         var payload = new
         {
-            model = "claude-haiku-4-5",
+            model = AiService.DefaultModel,
             max_tokens = 512,
             system = IntentPrompts.GetAdditionalDataSystemPrompt(intent, currentParamsJson),
             messages = new[]
